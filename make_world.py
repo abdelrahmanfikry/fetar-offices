@@ -42,7 +42,7 @@ rep("""  return `<h2>حسابي</h2><div class="card">
   <div class="card">
     <form id="profForm">""")
 rep("""${S.ramadan ? 'فطار المكتب 🌙' : 'فطار المكتب'}</a>""", """${esc(S.office?.name || 'فطار المكتب')}${S.ramadan ? ' 🌙' : ''}</a>""")
-rep("serverTimestamp, writeBatch, getDocs, increment }","serverTimestamp, writeBatch, getDocs, getDoc, increment }")
+rep("serverTimestamp, writeBatch, getDocs, increment, deleteField }","serverTimestamp, writeBatch, getDocs, getDoc, increment, deleteField }")
 s=re.sub(r'const firebaseConfig = \{.*?\};','''const firebaseConfig = {
   apiKey: "AIzaSyDbj9I3wq6Dr4WfhqA3J1dFL-tinLAncCc",
   authDomain: "fetar-offices.firebaseapp.com",
