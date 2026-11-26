@@ -209,6 +209,15 @@ function errMsg(e){
 }
 async function copy(text){ try{ await navigator.clipboard.writeText(text); toast('اتنسخ'); }catch{ toast('النسخ مش متاح'); } }
 
+/* ---------- حماية من الضغط: كل كتابة مهمة بتتسجل معاها «آخر مرة» والقواعد بتمنع التكرار السريع ---------- */
+// i=أصناف (نص ثانية) · t=تحويلات (10ث) · c=شكاوى (دقيقة) · n=ملاحظات (5ث) · o=طلبيات (10ث)
+async function wr(k, fn){
+  const b = writeBatch(db), out = fn(b); b.set(doc(ODB(),'rl',me()), { [k]: serverTimestamp() }, { merge:true });
+  try { await b.commit(); return out; }
+  catch (e) { if (e?.code === 'permission-denied') { toast('بالراحة شوية 😅 استنى ثانية وجرّب تاني'); const er = new Error('بالراحة شوية — استنى ثانية وجرّب تاني'); er.rl = true; throw er; } throw e; }
+}
+const addW = (k, col, data) => wr(k, b => { const ref = doc(col); b.set(ref, data); return ref; });
+const updW = (k, ref, data) => wr(k, b => b.update(ref, data));
 /* ---------- الحسابات ---------- */
 function orderCalc(o){
   const its = (S.items[o.id] || []).slice().sort((a,b)=>tsOf(a.createdAt)-tsOf(b.createdAt));
@@ -218,7 +227,7 @@ function orderCalc(o){
     p.items.push(it); p.sub += (+it.qty||0) * (+it.price||0);
   }
   const parts = Object.values(per);
-  const fee = +o.fee || 0, share = parts.length ? fee / parts.length : 0;
+  const fee = Math.min(500, Math.max(0, +o.fee || 0)), share = parts.length ? fee / parts.length : 0;
   parts.forEach(p => p.total = p.sub + share);
   const subtotal = parts.reduce((a,p)=>a+p.sub,0);
   return { its, parts, fee, share, subtotal, total: subtotal + fee };
@@ -234,12 +243,12 @@ function ledger(){
   };
   for (const o of S.orders){
     if (o.status !== 'closed' || !o.payerUid) continue;
-    for (const p of orderCalc(o).parts) add(o.payerUid, p.uid, p.total);
+    for (const p of orderCalc(o).parts) add(o.payerUid, p.uid, Math.max(0, p.total));
   }
   for (const t of S.transfers) if (t.confirmed) trAdd(add, t);
   for (const c of (S.cash || [])) add(c.fromUid, c.toUid, +c.amount || 0); // دفع كاش سجّله الأدمن
   // كارت العفو: اللي استخدمه عليه الغرامة لأمين صندوق الفطار
-  for (const u of Object.values(S.users || {})) for (const p of (u.pardons || [])) if (p.at > (S.resetAt || 0) && +p.fee > 0) add(p.to, u.id, +p.fee);
+  for (const u of Object.values(S.users || {})) for (const p of (u.pardons || [])) if (p.at > (S.resetAt || 0) && +p.fee > 0) add(p.to, u.id, Math.min(100, +p.fee));
   for (const p of (S.jarPay || [])){
     if (p.oid){ // الحصالة دفعت طلبية: اللي معاه الفكة يدّيها للي دفع الطلبية، واللي اتغطّى نصيبه مايدفعش الجزء ده
       for (const [holder, amt] of Object.entries(p.holders || {})) add(p.payer, holder, +amt || 0);
@@ -252,7 +261,7 @@ function ledger(){
 }
 // تحويل عادي: from سدّد لـ to · تحويل «على حساب» شخص: from سدّد دينه لـ ob، والفلوس بقت على to لـ ob
 function trAdd(add, t){
-  const a = +t.amount || 0;
+  const a = Math.max(0, +t.amount || 0);
   if (t.onBehalf && t.onBehalf !== t.fromUid && t.onBehalf !== t.toUid){ add(t.fromUid, t.onBehalf, a); add(t.onBehalf, t.toUid, a); }
   else add(t.fromUid, t.toUid, a);
 }
@@ -282,7 +291,7 @@ const carryKey = (cr, dr) => cr < dr ? [`${cr}_${dr}`, 1] : [`${dr}_${cr}`, -1];
 function contribution(orders, transfers){
   const out = {};
   const add = (cr, dr, amt) => { if (!cr || !dr || cr===dr || !amt) return; const [k, s] = carryKey(cr, dr); out[k] = (out[k]||0) + s*amt; };
-  for (const o of orders){ if (o.status !== 'closed' || !o.payerUid) continue; for (const p of orderCalc(o).parts) add(o.payerUid, p.uid, p.total); }
+  for (const o of orders){ if (o.status !== 'closed' || !o.payerUid) continue; for (const p of orderCalc(o).parts) add(o.payerUid, p.uid, Math.max(0, p.total)); }
   for (const t of transfers) if (t.confirmed) trAdd(add, t);
   return out;
 }
@@ -498,7 +507,7 @@ function jarNow(){
   const lastP = (S.jarPay || []).reduce((a, p) => (!a || (p.at||0) > (a.at||0)) ? p : a, null);
   for (const [h, a] of Object.entries(lastP?.left || {})) if (+a > 0){ holders[h] = r2((holders[h]||0) + +a); total += +a; }
   const leftTotal = r2(total);
-  for (const t of S.transfers) if (t.confirmed && +t.jar > 0 && tsOf(t.createdAt) > since){ holders[t.toUid] = r2((holders[t.toUid]||0) + +t.jar); total += +t.jar; n++; list.push(t); }
+  for (const t of S.transfers){ const jv = Math.min(10, +t.jar || 0, +t.amount || 0); if (t.confirmed && jv > 0 && tsOf(t.createdAt) > since){ holders[t.toUid] = r2((holders[t.toUid]||0) + jv); total += jv; n++; list.push(t); } }
   return { total:r2(total), n, holders, list, leftTotal };
 }
 // الحصالة تدفع طلبية: بتغطّي أنصبة الناس بترتيب الطلب — أول واحد طلب يتغطّى الأول، واللي طلبه عدّى الحصالة يدفع الزيادة
@@ -1072,13 +1081,13 @@ const A = {
   },
 
   newOrder: day => modal(day===yesterdayStr() ? 'طلبية امبارح' : 'طلبية جديدة', orderForm({ day: day || todayStr() }), async f => {
-    const data = readOrderForm(f), ref = await addDoc(collection(ODB(),'orders'), { ...data, status:'open', createdBy:me(), createdAt:serverTimestamp() });
+    const data = readOrderForm(f), ref = await addW('o', collection(ODB(),'orders'), { ...data, status:'open', createdBy:me(), createdAt:serverTimestamp() });
     pushSend('طلبية جديدة اتفتحت 🍳', `${uname(me())} فتح «${data.title || 'طلبية'}»${data.restaurantName ? ' من ' + data.restaurantName : ''} — الحق اطلب`, '#order/' + ref.id, null, 'order');
     location.hash = 'order/' + ref.id;
   }, 'افتح الطلبية'),
   cloneOrder: id => { const o = S.orders.find(x=>x.id===id);
     modal('طلبية زي دي', orderForm({ ...o, day:todayStr(), note:'' }), async f => {
-      const data = readOrderForm(f), ref = await addDoc(collection(ODB(),'orders'), { ...data, status:'open', createdBy:me(), createdAt:serverTimestamp() });
+      const data = readOrderForm(f), ref = await addW('o', collection(ODB(),'orders'), { ...data, status:'open', createdBy:me(), createdAt:serverTimestamp() });
     pushSend('طلبية جديدة اتفتحت 🍳', `${uname(me())} فتح «${data.title || 'طلبية'}»${data.restaurantName ? ' من ' + data.restaurantName : ''} — الحق اطلب`, '#order/' + ref.id, null, 'order');
       location.hash = 'order/' + ref.id;
     }, 'افتح الطلبية'); },
@@ -1086,10 +1095,10 @@ const A = {
     const [iid, d] = x.split('|'), it = (S.items[oid]||[]).find(i=>i.id===iid); if (!it) return;
     const q = r2((+it.qty||0) + (+d));
     if (q <= 0){ if (confirm('تحذف الصنف ده؟')) await deleteDoc(doc(ODB(),'orders',oid,'items',iid)); return; }
-    await updateDoc(doc(ODB(),'orders',oid,'items',iid), { qty:q });
+    await updW('i', doc(ODB(),'orders',oid,'items',iid), { qty:q }).catch(() => {});
   },
   addNote: oid => modal('ملاحظة على الطلبية', '<label>الملاحظة<textarea name="text" rows="3" required></textarea></label>',
-    f => addDoc(collection(ODB(),'orders',oid,'notes'), { uid:me(), text:f.get('text').trim(), createdAt:serverTimestamp() }), 'أضف'),
+    f => addW('n', collection(ODB(),'orders',oid,'notes'), { uid:me(), text:f.get('text').trim(), createdAt:serverTimestamp() }), 'أضف'),
   delNote: async (oid, nid) => { if (confirm('تحذف الملاحظة؟')) await deleteDoc(doc(ODB(),'orders',oid,'notes',nid)); },
   offGo: oid => setCur(oid),
   offSwitch: () => setDoc(doc(db,'gusers',me()), { cur: null }, { merge:true }),
@@ -1136,9 +1145,8 @@ const A = {
   girlsJoke: (_, x) => setDoc(doc(ODB(),'config','app'), { girlsJoke: x === '1' }, { merge:true }).then(() => toast(x === '1' ? 'الهزار اشتغل 🎀' : 'الهزار اتقفل')),
   ramadan: (_, x) => setDoc(doc(ODB(),'config','app'), { ramadan: x === '1' }, { merge:true }).then(() => toast(x === '1' ? 'رمضان كريم 🌙' : 'وضع رمضان اتقفل')),
   cNew: () => modal('شكوى مجهولة 🤐', `<p class="mut" style="margin-top:0;font-size:13px">اسمك مش هيظهر لحد غير الأدمن.</p><label>الشكوى<textarea name="t" maxlength="200" rows="3" required placeholder="مثلًا: الفول النهارده كان بارد زي قلب اللي نزل"></textarea></label>`,
-      f => { const t = f.get('t').trim().slice(0, 200); if (!t) return; const ref = doc(collection(ODB(),'complaints')), b = writeBatch(db);
-        b.set(doc(ODB(),'complaintAuthors',ref.id), { uid: me() }); b.set(ref, { text: t, at: Date.now() });
-        return b.commit().then(() => toast('الشكوى اتحطت في الصندوق 📮')).catch(e => toast(errMsg(e))); }, 'ابعت'),
+      f => { const t = f.get('t').trim().slice(0, 200); if (!t) return; const ref = doc(collection(ODB(),'complaints'));
+        return wr('c', b => { b.set(doc(ODB(),'complaintAuthors',ref.id), { uid: me() }); b.set(ref, { text: t, at: Date.now() }); }).then(() => toast('الشكوى اتحطت في الصندوق 📮')).catch(e => toast(errMsg(e))); }, 'ابعت'),
   cDel: id => { if (!confirm('تمسح الشكوى دي؟')) return; const b = writeBatch(db); b.delete(doc(ODB(),'complaints',id)); b.delete(doc(ODB(),'complaintAuthors',id)); return b.commit().catch(e => toast(errMsg(e))); },
   cAll: () => { S.cAll = !S.cAll; render(); },
   pardonSet: () => modal('كارت العفو', `<label>الغرامة (ج.م) — صفر يبقى ببلاش<input name="fee" type="number" min="0" step="0.5" inputmode="decimal" value="${+S.pardonFee || 0}" required></label>
@@ -1171,7 +1179,7 @@ const A = {
     return setDoc(doc(ODB(),'users',me()), { lunch:{ [day]: cur === val ? null : val } }, { merge:true }); },
   lunchOrder: day => { const p = (S.lunch || {})[day] || {};
     return modal('طلبية الغدا', orderForm({ day, title:'غدا', restaurantId:p.rid || '', restaurantName:p.rid ? '' : (p.name || '') }), async f => {
-      const data = readOrderForm(f), ref = await addDoc(collection(ODB(),'orders'), { ...data, lunch:true, status:'open', createdBy:me(), createdAt:serverTimestamp() });
+      const data = readOrderForm(f), ref = await addW('o', collection(ODB(),'orders'), { ...data, lunch:true, status:'open', createdBy:me(), createdAt:serverTimestamp() });
       pushSend('طلبية الغدا اتفتحت 🍲', `${data.restaurantName || 'الغدا'} — الحق اطلب`, '#order/' + ref.id, [...new Set([...(S.lunchMembers||[]), ...(S.admins||[])])], 'lunch');
       location.hash = 'order/' + ref.id; }, 'افتح الطلبية'); },
   myPush: async (k, x) => { await setDoc(doc(ODB(),'users',me()), { pushOff:{ [k]: x === '1' } }, { merge:true }); toast(x === '1' ? 'اتقفل عندك ✕' : 'اتشغّل عندك ✓'); },
@@ -1293,16 +1301,16 @@ const A = {
 
   addItem: id => { const o = S.orders.find(x=>x.id===id); modal('أضف طلبك', itemForm(o), f => addItemFromForm(o, f), 'أضف'); },
   editItem: (oid, iid) => { const o = S.orders.find(x=>x.id===oid), it = (S.items[oid]||[]).find(x=>x.id===iid);
-    modal('تعديل الصنف', itemForm(o, it), f => updateDoc(doc(ODB(),'orders',oid,'items',iid), { name:f.get('name').trim(), qty:+f.get('qty'), price:+f.get('price'), note:f.get('note').trim() })); },
+    modal('تعديل الصنف', itemForm(o, it), f => updW('i', doc(ODB(),'orders',oid,'items',iid), { name:f.get('name').trim(), qty:+f.get('qty'), price:+f.get('price'), note:f.get('note').trim() })); },
   delItem: async (oid, iid) => { if (confirm('تحذف الصنف ده؟')) await deleteDoc(doc(ODB(),'orders',oid,'items',iid)); },
   pickItem: (name, price) => { $('#f_name').value = name; if (+price) $('#f_price').value = price; else $('#f_price').focus(); },
   quick: async (oid, name) => {
     const o = S.orders.find(x=>x.id===oid); if (!o || o.status!=='open') return;
     const mine = (S.items[oid]||[]).find(i => i.uid===me() && i.name===name && !i.note);
-    if (mine) { await updateDoc(doc(ODB(),'orders',oid,'items',mine.id), { qty: r2((+mine.qty||0) + 1) }); return toast(`${name}: ${r2((+mine.qty||0)+1)}`); }
+    if (mine) { try { await updW('i', doc(ODB(),'orders',oid,'items',mine.id), { qty: r2((+mine.qty||0) + 1) }); } catch { return; } return toast(`${name}: ${r2((+mine.qty||0)+1)}`); }
     const price = priceFor(o, name);
     if (!price) return modal('سعر ' + esc(name), `<p class="mut" style="margin-top:0;font-size:13px">اكتب السعر مرة واحدة — هيتحفظ وبعد كده الصنف هيتضاف بضغطة.</p>` + itemForm(o, { name }), f => addItemFromForm(o, f), 'أضف');
-    await addDoc(collection(ODB(),'orders',oid,'items'), { uid:me(), officeId:OFF, orderId:oid, name, qty:1, price, note:'', createdAt:serverTimestamp() });
+    try { await addW('i', collection(ODB(),'orders',oid,'items'), { uid:me(), officeId:OFF, orderId:oid, name, qty:1, price, note:'', createdAt:serverTimestamp() }); } catch { return; }
     toast(`اتضاف ${name}`);
   },
   addRow: () => { $('#prows').insertAdjacentHTML('beforeend', priceRow()); const ins = $('#prows').querySelectorAll('input[name^="n_"]'); ins[ins.length-1].focus(); },
@@ -1313,9 +1321,8 @@ const A = {
     f => setDoc(doc(ODB(),'config','catalog'), { items: readPriceRows(f), updatedBy:me(), updatedAt:serverTimestamp() })),
   repeatLast: async id => {
     const o = S.orders.find(x=>x.id===id), its = lastMyItems(o); if (!its.length) return;
-    const b = writeBatch(db);
-    its.forEach(it => b.set(doc(collection(ODB(),'orders',id,'items')), { uid:me(), officeId:OFF, orderId:id, name:it.name, qty:+it.qty, price:+it.price, note:it.note||'', createdAt:serverTimestamp() }));
-    await b.commit(); closeModal(); toast(`اتضاف ${its.length} صنف`);
+    try { await wr('i', b => its.forEach(it => b.set(doc(collection(ODB(),'orders',id,'items')), { uid:me(), officeId:OFF, orderId:id, name:it.name, qty:+it.qty, price:+it.price, note:it.note||'', createdAt:serverTimestamp() }))); } catch { return; }
+    closeModal(); toast(`اتضاف ${its.length} صنف`);
   },
 
   newTransfer: (to, amt) => modal('سجّل تحويل عملته', `
@@ -1330,7 +1337,7 @@ const A = {
       if (dup && !confirm(`انت مسجّل قبل كده تحويل ${money(amount)} لـ ${uname(to)} ولسه مستني تأكيد.\nتسجّل تحويل تاني؟`)) return;
       // من غير ما نستنى السيرفر: التحويل بيظهر على طول ويتبعت في الخلفية
       pushSend('تحويل مستني تأكيدك 💸', `${uname(me())} بيقول حوّلك ${money(jar ? Math.ceil(amount) : amount)}`, '#transfers', [to], 'transfer');
-      addDoc(collection(ODB(),'transfers'), { fromUid:me(), toUid:to, amount, ...(jar ? { jar } : {}), note:f.get('note').trim(), confirmed:false, createdAt:serverTimestamp() }).catch(e => toast(errMsg(e)));
+      addW('t', collection(ODB(),'transfers'), { fromUid:me(), toUid:to, amount, ...(jar ? { jar } : {}), note:f.get('note').trim(), confirmed:false, createdAt:serverTimestamp() }).catch(e => toast(errMsg(e)));
       toast(jar ? `اتسجّل ✓ — حوّل ${money(up)}، و${money(jar)} راحوا الحصالة 🐷` : `اتسجّل ✓ — مستني ${uname(to)} يأكد إنه وصله`); location.hash = 'transfers'; }, 'سجّل'),
   jarPayOrder: async oid => {
     const o = S.orders.find(x => x.id === oid), c = orderCalc(o), j = jarNow(); if (!o || !(j.total > 0)) return;
@@ -1385,7 +1392,7 @@ function readPriceRows(f){
 // إضافة صنف من الفورم + حفظ سعره لو كان ناقص أو اتغيّر (علشان يتكتب مرة واحدة)
 async function addItemFromForm(o, f){
   const name = f.get('name').trim(), price = +f.get('price');
-  await addDoc(collection(ODB(),'orders',o.id,'items'), { uid:me(), officeId:OFF, orderId:o.id, name, qty:+f.get('qty'), price, note:f.get('note').trim(), createdAt:serverTimestamp() });
+  await addW('i', collection(ODB(),'orders',o.id,'items'), { uid:me(), officeId:OFF, orderId:o.id, name, qty:+f.get('qty'), price, note:f.get('note').trim(), createdAt:serverTimestamp() });
   await savePrice(o, name, price).catch(()=>{});
 }
 async function savePrice(o, name, price){
@@ -1568,7 +1575,9 @@ function pushSend(title, body, hash, uids, kind){
   for (const u of Object.values(S.users)){ if ((u.id === me() && !uids?.includes(me())) || (uids && !uids.includes(u.id)) || (kind && u.pushOff?.[kind])) continue;
     for (const v of Object.values(u.push || {})) if (v?.endpoint && v.keys) subs.push({ endpoint:v.endpoint, keys:v.keys }); }
   if (!subs.length) return Promise.resolve({ sent:0, none:true });
-  return fetch(PUSH_URL, { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ subs, title, body, hash }) }).then(r => r.json()).catch(e => ({ error:String(e) }));
+  return (auth.currentUser ? auth.currentUser.getIdToken() : Promise.resolve('')).catch(() => '')
+    .then(tok => fetch(PUSH_URL, { method:'POST', headers:{ 'Content-Type':'application/json', ...(tok ? { Authorization:'Bearer ' + tok } : {}) }, body:JSON.stringify({ subs, title, body, hash }) }))
+    .then(r => r.json()).then(j => j?.error === 'rate' ? { ...j, error:'وصلت للحد — استنى شوية' } : j).catch(e => ({ error:String(e) }));
 }
 const PUSH_KINDS = [['order','طلبية جديدة'],['lunch','طلبية الغدا'],['closed','قفل الطلبية ونصيبك'],['runner','العجلة اختارتك'],['remind','تذكير «لسه ماطلبتش»'],['announce','إعلان'],['poll','تصويت'],['transfer','تحويل مستني تأكيد'],['admin','إشعارات الأدمن'],['summary','ملخص الشهر']];
 function _noop(){
