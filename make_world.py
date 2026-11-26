@@ -22,7 +22,7 @@ rep("  if (!['users','orders','items','transfers','rests','config','carry','cata
 rep("  L('complaints', collection(ODB(),'complaints'),",
 """  L('office', ODB(), d => { S.office = d.exists() ? { id:d.id, ...d.data() } : null; });
   L('complaints', collection(ODB(),'complaints'),""")
-rep("S.loaded[name]=true; render(); }, e => toast(errMsg(e))));","S.loaded[name]=true; render(); }, e => { toast(errMsg(e)); S.loaded[name] = true; render(); }));")
+rep("if (e?.code === 'permission-denied' && (amPending() || !S.loaded.meDoc)) { S.loaded[name] = true; render(); return; } toast(errMsg(e)); }));","if (e?.code === 'permission-denied' && (amPending() || !S.loaded.meDoc)) { S.loaded[name] = true; render(); return; } toast(errMsg(e)); S.loaded[name] = true; render(); }));")
 rep("""onAuthStateChanged(auth, user => {
   stopListeners(); S.me = user; closeModal();
   if (user) startListeners();

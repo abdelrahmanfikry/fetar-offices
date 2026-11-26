@@ -4,7 +4,13 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function isMe(uid) { return signedIn() && request.auth.uid == uid; }
-    function isMemberOf(oid) { return signedIn() && exists(/databases/$(database)/documents/offices/$(oid)/users/$(request.auth.uid)); }
+    function rawMem(oid) { return signedIn() && exists(/databases/$(database)/documents/offices/$(oid)/users/$(request.auth.uid)); }
+    // موافقة أدمن المكتب (لو مفعّلة): العضو اللي لسه ماتوافقش عليه مايشوفش حاجة
+    function isMemberOf(oid) { return rawMem(oid) && (
+         !exists(/databases/$(database)/documents/offices/$(oid)/config/app)
+      || get(/databases/$(database)/documents/offices/$(oid)/config/app).data.get('approval', false) != true
+      || request.auth.uid in get(/databases/$(database)/documents/offices/$(oid)/config/app).data.get('admins', [])
+      || get(/databases/$(database)/documents/offices/$(oid)/users/$(request.auth.uid)).data.get('approved', false) == true); }
 
     // البروفايل العام: الاسم وقايمة المكاتب — صاحبه بس
     match /gusers/{uid} {
@@ -50,23 +56,28 @@ service cloud.firestore {
 
       // المستخدمين: كل واحد يعدّل بروفايله بس
       match /users/{uid} {
-        allow read: if mem();
-        // الانضمام: لازم الكود الصح · بعدها كل واحد يعدّل نفسه بس
-        allow create: if isMe(uid) && request.resource.data.code == getAfter(/databases/$(database)/documents/offices/$(oid)).data.code;
-        allow update: if isMe(uid);
+        allow read: if mem() || (isMe(uid) && rawMem(oid));
+        // الانضمام: لازم الكود الصح · بعدها كل واحد يعدّل نفسه بس (من غير ما يوافق على نفسه)
+        allow create: if isMe(uid) && request.resource.data.code == getAfter(/databases/$(database)/documents/offices/$(oid)).data.code
+                      && !('approved' in request.resource.data) && !('rejected' in request.resource.data);
+        allow update: if (isMe(uid)
+                          && request.resource.data.get('approved', null) == resource.data.get('approved', null)
+                          && request.resource.data.get('rejected', null) == resource.data.get('rejected', null))
+                      || (isAdmin() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approved', 'rejected', 'push']));
       }
 
       // الإعدادات: أول واحد بيعمل نفسه أدمن، وبعدها الأدمن بس يعدّل
       match /config/app {
-        allow read: if mem();
+        allow read: if rawMem(oid);
         allow create: if signedIn() && request.resource.data.admins == [request.auth.uid]
                       && getAfter(/databases/$(database)/documents/offices/$(oid)).data.createdBy == request.auth.uid;
         allow update: if isAdmin();
       }
 
-      // الأصناف الثابتة: مشتركة، أي حد يعدّلها
+      // الأصناف الثابتة: الكل يشوفها · الأدمن بس يعدّل
       match /config/catalog {
-        allow read, write: if mem();
+        allow read: if mem();
+        allow write: if isAdmin();
       }
 
       // الأرصدة المرحّلة بعد التنظيف — الأدمن بس
@@ -150,8 +161,10 @@ service cloud.firestore {
 
       // المنيوهات: مشتركة للكل · المسح لصاحبها
       match /restaurants/{rid} {
-        allow read, create, update: if mem();
-        allow delete: if isMe(resource.data.createdBy) || isAdmin();
+        allow read: if mem();
+        allow create: if mem() && request.resource.data.createdBy == request.auth.uid;
+        allow update: if (mem() && isMe(resource.data.get('createdBy', '')) && request.resource.data.createdBy == resource.data.createdBy) || isAdmin();
+        allow delete: if (mem() && isMe(resource.data.get('createdBy', ''))) || isAdmin();
       }
     }
   }
